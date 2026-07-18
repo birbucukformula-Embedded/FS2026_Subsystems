@@ -75,9 +75,3 @@ Ağ üzerinde dönen araç hız, sıcaklık ve hata verilerinin test sonrası an
 **Başlangıç Klasörü Önerisi:** `/SD_Datalogger/`
 
 ---
-
-### Katkıda Bulunma Rehberi
-1. Bu repoyu bilgisayarınıza indirin (`git clone`).
-2. Çalışacağınız görev için bir klasör oluşturun.
-3. Kodlarınızı yazıp çalıştırdıktan sonra `git add`, `git commit` ve `git push` ile bu repoya gönderin.
-4. Takıldığınız yerlerde birbirinize veya VCU Core ekibine danışmaktan çekinmeyin!
