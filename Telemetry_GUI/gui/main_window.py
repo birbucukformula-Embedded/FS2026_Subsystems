@@ -35,14 +35,16 @@ import os   # logo dosyasının tam yolunu bulmak için
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QLabel,
     QVBoxLayout, QHBoxLayout, QGridLayout,
+    QComboBox, QPushButton,
 )
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QFont, QPixmap
 
-# Kendi modüllerimiz: theme (renkler), widgets (parçalar), fake_data (veri).
+# Kendi modüllerimiz: theme (renkler), widgets (parçalar), veri kaynakları.
 from gui import theme
-from gui.widgets import ValueCard, StatusChip, SectionTitle
+from gui.widgets import ValueCard, StatusChip, SectionTitle, LiveChart
 from core import fake_data
+from core import serial_reader
 
 # Logo dosyasının yolu. __file__ = bu dosyanın konumu; oradan bir üst
 # klasöre çıkıp assets/logo.png'ye ulaşıyoruz. Böylece program hangi
@@ -58,7 +60,8 @@ class MainWindow(QMainWindow):
 
         # --- Pencere temel ayarları ---
         self.setWindowTitle("FS2026 — 1.5 Adana Formula Student | Pit Telemetri")
-        self.resize(1000, 720)
+        # Grafik bölümü de eklendiği için pencereyi biraz daha uzun açıyoruz.
+        self.resize(1000, 920)
         self.setStyleSheet(theme.STYLE_WINDOW)    # koyu tema (site renkleri)
 
         # QMainWindow'a doğrudan yerleşim verilemez; önce bir "merkez
@@ -80,7 +83,10 @@ class MainWindow(QMainWindow):
         main_layout.addLayout(self._build_temperature_cards())
         main_layout.addWidget(SectionTitle("Sistem"))
         main_layout.addLayout(self._build_status_chips())
-        main_layout.addStretch()   # kalan boşluğu alta it (kartlar yayılmasın)
+        main_layout.addWidget(SectionTitle("Canlı Grafikler"))
+        # Grafik ızgarasını "stretch faktörü 1" ile ekliyoruz: pencere
+        # büyüdükçe fazladan yeri GRAFİKLER kaplasın (kartlar sabit kalsın).
+        main_layout.addLayout(self._build_charts(), stretch=1)
         main_layout.addLayout(self._build_bottom_bar())
 
         # --- VERİ ZAMANLAYICISI ---
@@ -92,8 +98,95 @@ class MainWindow(QMainWindow):
         self.timer.timeout.connect(self.update_data)
         self.timer.start(100)   # 100 ms = saniyede 10 kez (10 Hz)
 
-        # Paket sıra numarası (seqNumber). Her pakette 1 artar.
-        self.packet_counter = 0
+        # --- VERİ KAYNAĞI ---
+        # data_source: o an verinin geldiği nesne (FakeDataSource ya da
+        # SerialReader). İkisi de next_packet() sunduğu için arayüz ayrımı
+        # bilmek zorunda değil.
+        self.data_source = None
+
+        # Açılışta: portları tara, Raspberry Pi / USB-UART adayı varsa ona
+        # otomatik bağlan; yoksa (ya da bağlanma başarısızsa) simülasyona düş.
+        self._refresh_ports()
+        self._auto_connect()
+
+    # ------------------------------------------------------------------
+    # SERİ PORT BAĞLANTI YÖNETİMİ
+    # ------------------------------------------------------------------
+
+    def _refresh_ports(self):
+        """Bağlı seri portları tarayıp port seçim kutusunu doldurur."""
+        self.port_combo.clear()
+        # Her port için "device — açıklama" metnini göster; asıl port adını
+        # (device) item'ın verisi olarak sakla (currentData ile alacağız).
+        for device, description in serial_reader.list_serial_ports():
+            self.port_combo.addItem(f"{device} — {description}", device)
+        if self.port_combo.count() == 0:
+            # Hiç port yoksa kullanıcı görsün diye bilgilendirici bir satır.
+            self.port_combo.addItem("(port bulunamadı)", None)
+
+    def _auto_connect(self):
+        """
+        Raspberry Pi / USB-UART adayı bir port varsa ona otomatik bağlanır.
+        Aday yoksa veya bağlanma başarısızsa simülasyon moduna geçer.
+        """
+        port = serial_reader.find_vehicle_port()
+        if port and self._connect(port):
+            return
+        self._use_simulation()
+
+    def _connect(self, port: str) -> bool:
+        """
+        Verilen porta bağlanmayı dener. Başarılıysa True döner ve veri
+        kaynağını seri porta çevirir; başarısızsa False döner.
+        """
+        try:
+            self.data_source = serial_reader.SerialReader(port)
+        except Exception:
+            # Port meşgul, izin yok, kayboldu vb. — çökmeden hata göster.
+            self._set_connection_status(f"HATA: {port}", state=False)
+            return False
+
+        # Bağlantı açık: chip'i yeşil yap, butonu "Kes"e çevir, portu seçili
+        # göster.
+        self._set_connection_status(f"BAĞLI: {port}", state=True)
+        self.connect_button.setText("Kes")
+        self._select_port_in_combo(port)
+        return True
+
+    def _disconnect(self):
+        """Açık seri portu kapatır ve simülasyon moduna döner."""
+        if isinstance(self.data_source, serial_reader.SerialReader):
+            self.data_source.close()
+        self._use_simulation()
+
+    def _use_simulation(self):
+        """Veri kaynağını sahte veriye çevirir (bağlantı yokken arayüz boş durmasın)."""
+        self.data_source = fake_data.FakeDataSource()
+        self._set_connection_status("SİMÜLASYON", state=None)
+        self.connect_button.setText("Bağlan")
+
+    def _toggle_connection(self):
+        """Bağlan/Kes butonuna basılınca çağrılır: duruma göre bağlan ya da kes."""
+        if isinstance(self.data_source, serial_reader.SerialReader):
+            self._disconnect()
+        else:
+            port = self.port_combo.currentData()   # seçili portun device adı
+            if port:
+                self._connect(port)
+
+    def _select_port_in_combo(self, port: str):
+        """Seçim kutusunda verilen portu seçili hale getirir (varsa)."""
+        index = self.port_combo.findData(port)
+        if index >= 0:
+            self.port_combo.setCurrentIndex(index)
+
+    def _set_connection_status(self, text: str, state):
+        """
+        Üst şeritteki bağlantı chip'ini günceller.
+        state: True -> yeşil (bağlı), None -> gri (simülasyon), False -> kırmızı (hata).
+        """
+        self.connection_chip.name = text
+        self.connection_chip.set_status(state)
 
     # ------------------------------------------------------------------
     # BÖLÜM KURULUM METODLARI — her biri bir yerleşim (layout) döndürür
@@ -118,15 +211,40 @@ class MainWindow(QMainWindow):
         title.setFont(QFont("Arial", 18, QFont.Bold))
         title.setStyleSheet(f"color: {theme.COLOR_TEXT}; letter-spacing: 3px;")
 
+        # --- Port seçim kutusu ---
+        # Bağlı seri portlar burada listelenir; kullanıcı manuel seçebilir.
+        # _refresh_ports() bunu doldurur.
+        self.port_combo = QComboBox()
+        self.port_combo.setStyleSheet(theme.STYLE_COMBOBOX)
+        self.port_combo.setMinimumWidth(220)
+
+        # --- Yenile butonu ---
+        # Sonradan takılan bir portu görmek için listeyi yeniden taratır.
+        self.refresh_button = QPushButton("↻")
+        self.refresh_button.setStyleSheet(theme.STYLE_BUTTON)
+        self.refresh_button.clicked.connect(self._refresh_ports)
+
+        # --- Bağlan/Kes butonu ---
+        # Metni duruma göre değişir ("Bağlan" <-> "Kes"); tıklama
+        # _toggle_connection'a gider.
+        self.connect_button = QPushButton("Bağlan")
+        self.connect_button.setStyleSheet(theme.STYLE_BUTTON)
+        self.connect_button.clicked.connect(self._toggle_connection)
+
         # --- Bağlantı durumu chip'i ---
-        # Rozetlerle aynı görünüm: koyu hap + renkli nokta. Seri port
-        # gelince nokta yeşil (STABİL) / kırmızı (KOPTU) olacak.
+        # Koyu hap + renkli nokta: yeşil=bağlı, gri=simülasyon, kırmızı=hata.
         self.connection_chip = StatusChip("SİMÜLASYON")
 
         bar.addWidget(logo_label)
         bar.addSpacing(10)          # logo ile başlık arası sabit boşluk
         bar.addWidget(title)
-        bar.addStretch()            # esnek boşluk -> chip'i sağa yaslar
+        bar.addStretch()            # esnek boşluk -> sağdaki grubu sağa yaslar
+        bar.addWidget(self.port_combo)
+        bar.addSpacing(6)
+        bar.addWidget(self.refresh_button)
+        bar.addSpacing(6)
+        bar.addWidget(self.connect_button)
+        bar.addSpacing(10)
         bar.addWidget(self.connection_chip)
         return bar
 
@@ -227,6 +345,35 @@ class MainWindow(QMainWindow):
         row.addStretch()   # chip'leri sola yasla
         return row
 
+    def _build_charts(self):
+        """
+        CANLI GRAFİKLER bölümü: canlı verilerin her biri için ayrı küçük
+        çizgi grafik. 2x2 ızgara düzeni:
+
+            [ GAZ PEDALI ]   [ FREN BASINCI ]
+            [ TORK KOMUTU]   [ GERİLİM      ]
+
+        Her grafik kendi ölçeğinde çizer (gaz 0-100, gerilim ~380-400);
+        bu yüzden ayrı ayrı tutmak, hepsini tek eksende sıkıştırmaktan
+        daha okunaklıdır.
+        """
+        grid = QGridLayout()
+        grid.setSpacing(10)
+
+        # Grafikleri oluştur ve self'e kaydet (update_data'dan besleyeceğiz).
+        # Renkleri tutarlı olsun diye hepsinde takım kırmızısını kullanıyoruz.
+        self.chart_apps    = LiveChart("GAZ PEDALI", "%")
+        self.chart_brake   = LiveChart("FREN BASINCI", "bar")
+        self.chart_torque  = LiveChart("TORK KOMUTU", "Nm")
+        self.chart_voltage = LiveChart("BATARYA GERİLİMİ", "V")
+
+        # addWidget(widget, satır, sütun)
+        grid.addWidget(self.chart_apps,    0, 0)
+        grid.addWidget(self.chart_brake,   0, 1)
+        grid.addWidget(self.chart_torque,  1, 0)
+        grid.addWidget(self.chart_voltage, 1, 1)
+        return grid
+
     def _build_bottom_bar(self):
         """Alt şerit: paket no + bağlantı sağlığı metrikleri."""
         bar = QHBoxLayout()
@@ -257,48 +404,75 @@ class MainWindow(QMainWindow):
         """
         QTimer tarafından saniyede 10 kez çağrılır.
 
-        Akış: core katmanından bir paket al -> ekrandaki widget'lara işle.
-        İleride seri port eklendiğinde SADECE paketin alındığı satır
-        değişecek (fake_data yerine serial_reader); gerisi aynı kalacak.
+        Akış: veri kaynağından bir paket al -> ekrandaki widget'lara işle.
+        Veri kaynağı FakeDataSource ya da SerialReader olabilir; ikisi de
+        next_packet() sunduğu için bu kod ikisiyle de aynı şekilde çalışır.
+
+        NOT: Paketteki alanlara packet.get(...) ile erişiyoruz (packet[...]
+        değil). Çünkü gerçek seri veride bir alan eksik gelebilir; .get()
+        eksikse KeyError yerine None döndürür ve ilgili widget o değeri
+        görmezden gelir (mevcut halini korur).
         """
-        self.packet_counter += 1
-        packet = fake_data.generate_packet(self.packet_counter)
+        packet = self.data_source.next_packet()
+        if packet is None:
+            # Seri portta henüz tam bir satır oluşmadı; bu turda işlenecek
+            # veri yok. Sessizce çık, bir sonraki tetikte tekrar bak.
+            return
 
         # --- Canlı sayısal kartlar ---
-        self.card_apps.update_value(packet["appsPercent"])
-        self.card_brake.update_value(packet["brakePressure"])
-        self.card_torque.update_value(packet["torqueCommand"])
-        self.card_voltage.update_value(packet["batteryVoltage"])
-        # Placeholder kartlar (RPM, akım, SOC, sıcaklıklar) güncellenmez;
-        # update_value çağrılsa bile kendileri "—" olarak kalır.
+        self.card_apps.update_value(packet.get("appsPercent"))
+        self.card_brake.update_value(packet.get("brakePressure"))
+        self.card_torque.update_value(packet.get("torqueCommand"))
+        self.card_voltage.update_value(packet.get("batteryVoltage"))
+        # Placeholder kartlar (RPM, akım, SOC, sıcaklıklar) güncellenmez.
 
-        # --- Bağlantı chip'i ---
-        # Simülasyon her zaman "canlı" sayılır -> yeşil nokta.
-        self.connection_chip.set_status(True)
+        # --- Canlı grafikler ---
+        self.chart_apps.add_point(packet.get("appsPercent"))
+        self.chart_brake.add_point(packet.get("brakePressure"))
+        self.chart_torque.add_point(packet.get("torqueCommand"))
+        self.chart_voltage.add_point(packet.get("batteryVoltage"))
 
         # --- Araç durumu ---
-        state = fake_data.state_text(packet["vehicleState"])
-        self.state_label.setText(f"ARAÇ DURUMU: {state}")
+        # vehicleState varsa metne çevirip göster; yoksa dokunma.
+        if packet.get("vehicleState") is not None:
+            state = fake_data.state_text(packet["vehicleState"])
+            self.state_label.setText(f"ARAÇ DURUMU: {state}")
 
         # --- Arıza ---
-        # README renk kuralı: faultCode != 0 ise KIRMIZI; normalde soluk
-        # beyaz (sürekli yeşil yazı göz yorduğu için kullanılmıyor).
-        if packet["faultCode"] == 0:
-            self.fault_label.setText("ARIZA: YOK")
-            self.fault_label.setStyleSheet(f"color: {theme.COLOR_TEXT_MUTED};")
-        else:
-            self.fault_label.setText(f"ARIZA: KOD {packet['faultCode']}")
-            self.fault_label.setStyleSheet(
-                f"color: {theme.COLOR_CRITICAL}; font-weight: bold;"
-            )
+        # README renk kuralı: faultCode != 0 ise KIRMIZI; normalde soluk beyaz.
+        fault = packet.get("faultCode")
+        if fault is not None:
+            if fault == 0:
+                self.fault_label.setText("ARIZA: YOK")
+                self.fault_label.setStyleSheet(f"color: {theme.COLOR_TEXT_MUTED};")
+            else:
+                self.fault_label.setText(f"ARIZA: KOD {fault}")
+                self.fault_label.setStyleSheet(
+                    f"color: {theme.COLOR_CRITICAL}; font-weight: bold;"
+                )
 
         # --- Durum chip'leri ---
-        # Chip adı -> paket alanı eşlemesini dolaşıp her chip'i güncelle.
+        # Alan yoksa set_status(None) -> gri "veri yok" noktası gösterir.
         for name, field_name in self.chip_fields.items():
-            self.chips[name].set_status(packet[field_name])
+            self.chips[name].set_status(packet.get(field_name))
 
         # --- Alt şerit ---
-        self.packet_label.setText(f"Paket: #{packet['seqNumber']}")
-        self.loss_label.setText("Kayıp: %0.0")
-        self.latency_label.setText(f"Gecikme: {packet['latencyMs']} ms")
-        self.rssi_label.setText(f"RSSI: {packet['rssiDbm']} dBm")
+        if packet.get("seqNumber") is not None:
+            self.packet_label.setText(f"Paket: #{packet['seqNumber']}")
+        if packet.get("latencyMs") is not None:
+            self.latency_label.setText(f"Gecikme: {packet['latencyMs']} ms")
+        if packet.get("rssiDbm") is not None:
+            self.rssi_label.setText(f"RSSI: {packet['rssiDbm']} dBm")
+
+    # ------------------------------------------------------------------
+    # PENCERE KAPANIŞI
+    # ------------------------------------------------------------------
+
+    def closeEvent(self, event):
+        """
+        Pencere kapatılırken çağrılır (Qt olayı). Açık seri port varsa
+        düzgünce kapatıyoruz ki port kilitli kalmasın.
+        """
+        if isinstance(self.data_source, serial_reader.SerialReader):
+            self.data_source.close()
+        super().closeEvent(event)

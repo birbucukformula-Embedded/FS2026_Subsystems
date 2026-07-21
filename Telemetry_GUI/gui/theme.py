@@ -47,6 +47,14 @@ COLOR_BORDER        = "rgba(232, 0, 13, 0.25)"    # sitenin --border: saydam kı
 COLOR_BORDER_SUBTLE = "rgba(255, 255, 255, 0.08)" # sitedeki soluk beyaz çizgiler
 
 # ---------------------------------------------------------------------------
+# GRAFİK RENKLERİ (pyqtgraph için)
+# ---------------------------------------------------------------------------
+# ÖNEMLİ: pyqtgraph, Qt Style Sheet'in aksine "rgba(...)" metin biçimini
+# ANLAMAZ; ona düz hex renk vermek gerekir. Bu yüzden grafik ekseni/ızgarası
+# için ayrı, hex biçiminde bir renk tanımlıyoruz.
+COLOR_CHART_AXIS = "#3A3A3A"   # grafik ekseni ve ızgara çizgileri (soluk gri)
+
+# ---------------------------------------------------------------------------
 # HAZIR STİL PARÇALARI
 # ---------------------------------------------------------------------------
 # Ana pencerenin genel stili: koyu zemin + açık yazı.
@@ -84,4 +92,37 @@ STYLE_SECTION_TITLE = (
     f"font-size: 13px;"
     f"font-weight: bold;"
     f"letter-spacing: 2px;"
+)
+
+# Port seçim kutusu (QComboBox): koyu zemin, soluk kenarlık — temaya uyumlu.
+STYLE_COMBOBOX = (
+    f"QComboBox {{"
+    f"  background-color: {COLOR_SURFACE};"
+    f"  border: 1px solid {COLOR_BORDER_SUBTLE};"
+    f"  border-radius: 6px;"
+    f"  padding: 4px 8px;"
+    f"  color: {COLOR_TEXT};"
+    f"  font-size: 12px;"
+    f"}}"
+    # Açılır listenin kendisi de koyu görünsün.
+    f"QComboBox QAbstractItemView {{"
+    f"  background-color: {COLOR_SURFACE};"
+    f"  color: {COLOR_TEXT};"
+    f"  selection-background-color: {COLOR_ACCENT};"
+    f"}}"
+)
+
+# Bağlan/Kes butonu (QPushButton): takım kırmızısı zemin, beyaz yazı.
+STYLE_BUTTON = (
+    f"QPushButton {{"
+    f"  background-color: {COLOR_ACCENT};"
+    f"  border: none;"
+    f"  border-radius: 6px;"
+    f"  padding: 5px 14px;"
+    f"  color: white;"
+    f"  font-weight: bold;"
+    f"  font-size: 12px;"
+    f"}}"
+    # Fare üzerine gelince biraz koyulaşsın (basit bir geri bildirim).
+    f"QPushButton:hover {{ background-color: #B00009; }}"
 )

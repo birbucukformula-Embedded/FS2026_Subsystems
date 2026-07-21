@@ -14,12 +14,23 @@ Neden ayrı dosya? Ana pencere "ekranı nasıl dizeceğim" ile uğraşsın;
 ayrılması / separation of concerns).
 """
 
+from collections import deque   # sabit boyutlu "kayan pencere" için (aşağıda açıklandı)
+
 from PyQt5.QtWidgets import QFrame, QLabel, QVBoxLayout
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
 
+import pyqtgraph as pg   # gerçek zamanlı çizgi grafik kütüphanesi
+
 # Renkleri tek merkezden (theme.py) alıyoruz — burada renk TANIMLAMIYORUZ.
 from gui import theme
+
+# --- pyqtgraph genel ayarları (modül bir kez import edilince çalışır) ---
+# antialias=True: çizgilerin kenarları pürüzsüz görünür (daha şık).
+# background/foreground: varsayılan zemin ve yazı renklerini temadan alıyoruz.
+pg.setConfigOptions(antialias=True)
+pg.setConfigOption("background", theme.COLOR_SURFACE)
+pg.setConfigOption("foreground", theme.COLOR_TEXT_MUTED)
 
 
 class ValueCard(QFrame):
@@ -92,6 +103,11 @@ class ValueCard(QFrame):
             # CAN entegrasyonu tamamlanınca bu bayrak False yapılacak.
             return
 
+        if new_value is None:
+            # Bu alan pakette yoktu (gerçek seri veride eksik olabilir);
+            # kartın son değerini bozmadan çıkıyoruz.
+            return
+
         # f-string ile 1 ondalık basamaklı yazıya çevirip bas.
         self.value_label.setText(f"{new_value:.1f}")
         # Veri aktığı sürece değer beyaz görünsün (gri = veri yok demekti).
@@ -150,3 +166,74 @@ class SectionTitle(QLabel):
         # .upper(): başlıklar her zaman BÜYÜK HARF görünsün.
         super().__init__(text.upper())
         self.setStyleSheet(theme.STYLE_SECTION_TITLE)
+
+
+class LiveChart(pg.PlotWidget):
+    """
+    Tek bir telemetri değerinin ZAMANLA nasıl değiştiğini gösteren canlı
+    çizgi grafik (örn: gaz pedalının son 10 saniyedeki seyri).
+
+    ÇALIŞMA MANTIĞI — "kayan pencere" (sliding window):
+      Grafikte SON `max_points` kadar örnek tutulur. Yeni bir örnek
+      geldiğinde en eski örnek otomatik düşer; böylece grafik sonsuza
+      kadar büyümez ve sürekli sağa doğru akar. Bunu `collections.deque`
+      ile yapıyoruz: maxlen dolunca, yeni eleman eklenince baştaki eleman
+      kendiliğinden atılır — README'nin sorduğu "10 Hz veri ekranı
+      dondurmadan nasıl çizilir?" sorusunun performanslı cevabı budur
+      (her seferinde tüm geçmişi yeniden çizmeyiz, sadece son N nokta).
+
+    max_points=100 ve 10 Hz veri => grafikte ~10 saniyelik pencere görünür.
+    """
+
+    def __init__(self, title: str, unit: str,
+                 color: str = theme.COLOR_ACCENT, max_points: int = 100):
+        super().__init__()
+
+        self.max_points = max_points
+        self.sample_index = 0   # kaçıncı örnekteyiz (x ekseni sayacı)
+
+        # deque(maxlen=N): en fazla N eleman tutan, dolunca baştan atan liste.
+        # x: örnek numarası, y: o örnekteki değer. İkisi eş zamanlı büyür.
+        self.x_data = deque(maxlen=max_points)
+        self.y_data = deque(maxlen=max_points)
+
+        # --- Grafik görünümü (temaya uyumlu) ---
+        # Başlık: "GAZ PEDALI (%)" gibi; soluk gri, küçük punto.
+        self.setTitle(f"{title} ({unit})",
+                      color=theme.COLOR_TEXT_MUTED, size="9pt")
+        # Izgara (grid): hafif görünür çizgiler, okumayı kolaylaştırır.
+        self.showGrid(x=True, y=True, alpha=0.15)
+        # Pit ekranında grafiğe fareyle zoom/pan yapılmasını kapatıyoruz;
+        # ekran sadece "izleme" amaçlı, yanlışlıkla kaydırılmasın.
+        self.setMouseEnabled(x=False, y=False)
+        self.setMenuEnabled(False)   # sağ tık menüsünü de kapat
+        self.hideButtons()           # köşedeki küçük "A" (auto-range) butonunu gizle
+
+        # Eksen çizgisi ve yazı renklerini temadan (hex) ver.
+        for axis_name in ("left", "bottom"):
+            axis = self.getAxis(axis_name)
+            axis.setPen(theme.COLOR_CHART_AXIS)       # eksen çizgisi
+            axis.setTextPen(theme.COLOR_TEXT_MUTED)   # eksen sayıları
+
+        # --- Çizgi (curve) ---
+        # mkPen: çizginin kalemi (rengi + kalınlığı). Grafiği çizen asıl nesne
+        # budur; her yeni veride bunun içini güncelleyeceğiz (yeniden yaratmayız).
+        pen = pg.mkPen(color=color, width=2)
+        self.curve = self.plot([], [], pen=pen)
+
+    def add_point(self, value):
+        """
+        Grafiğe yeni bir veri noktası ekler. Her telemetri paketinde
+        ana pencere tarafından çağrılır.
+        """
+        if value is None:
+            # Bu alan pakette yoktu; grafiği bozmadan bu noktayı atlıyoruz.
+            return
+
+        self.sample_index += 1
+        self.x_data.append(self.sample_index)
+        self.y_data.append(value)
+
+        # setData: çizginin tüm (x, y) dizisini bir kerede günceller.
+        # deque'yi listeye çeviriyoruz çünkü pyqtgraph diziyi öyle bekliyor.
+        self.curve.setData(list(self.x_data), list(self.y_data))

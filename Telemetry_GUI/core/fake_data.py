@@ -10,8 +10,15 @@ gelecek telemetri paketinin AYNI FORMATTA sahtesini üretmektir.
 Neden böyle yapıyoruz?
   1. Seri port (gerçek araç) olmadan da arayüzü test edebiliyoruz.
   2. İleride `core/serial_reader.py` yazıldığında, o da AYNI sözlük (dict)
-     formatını döndürecek. Arayüz tarafında TEK SATIR bile değişmeyecek;
-     sadece veri kaynağı değiştirilecek.
+     formatını döndüren bir sınıf olacak (ör. SerialReader.next_packet()).
+     Arayüz tarafında neredeyse hiçbir şey değişmeyecek; sadece veri
+     kaynağı nesnesi değiştirilecek.
+
+NEDEN SINIF? (önceki sürümde düz fonksiyondu)
+  Grafiklerin gerçekçi görünmesi için değerlerin YUMUŞAK değişmesi gerekir
+  (gerçek sensör verisi ani zıplamaz). Bunu yapmak için "önceki değeri"
+  hatırlamak lazım — yani state (durum) tutmak gerekir. Fonksiyonlar state
+  tutamaz; sınıflar tutar. Bu yüzden veri kaynağını bir sınıfa aldık.
 
 Paket alanları README'deki "FST-26 Pit Telemetri Veri Rehberi"nden
 BİREBİR alınmıştır — rehberde ne varsa pakette de o var:
@@ -37,60 +44,6 @@ VEHICLE_STATES = {
 }
 
 
-def generate_packet(seq_number: int) -> dict:
-    """
-    Tek bir sahte telemetri paketi üretir ve sözlük (dict) olarak döndürür.
-
-    Parametre:
-        seq_number: paket sıra numarası (seqNumber). Çağıran taraf her
-                    seferinde 1 artırarak verir; gerçek sistemde kayıp
-                    paket hesabı bu numaradan yapılır.
-
-    Dönen sözlüğün anahtarları README'deki alan adlarıyla birebir aynıdır;
-    böylece gerçek paket ayrıştırıcı (parser) yazıldığında format uyuşur.
-    """
-    return {
-        # ---------------- Bölüm 1: CANLI ALANLAR ----------------
-        "seqNumber": seq_number,
-        "uptimeMs": seq_number * 100,   # 10 Hz'de her paket 100 ms arayla
-
-        # Simülasyonda hep READY (1); arıza senaryosunu denemek istersen
-        # vehicleState'i 3 ve faultCode'u 0 dışı bir değer yap.
-        "vehicleState": 1,
-        "faultCode": 0,              # 0 = arıza yok
-
-        "appsPercent":    random.uniform(0, 100),    # gaz pedalı, %
-        "brakePressure":  random.uniform(0, 50),     # fren basıncı, bar
-        "torqueCommand":  random.uniform(0, 200),    # tork komutu, Nm
-        "batteryVoltage": random.uniform(380, 400),  # HV batarya gerilimi, V
-
-        # systemFlags bitleri: gerçekte tek bir sayının bitleri olarak
-        # gelir (bit maskeleme ile çözülür); simülasyonda kolaylık olsun
-        # diye ayrı ayrı bool tutuyoruz.
-        "airMinus": True,        # AIR- kontaktörü kapalı (devrede)
-        "airPlus": True,         # AIR+ kontaktörü kapalı (devrede)
-        "precharge": True,       # precharge tamamlandı
-        "sdcClosed": True,       # shutdown circuit kapalı (OK)
-        "inverterEnable": True,  # inverter etkin
-
-        # ---------------- Bölüm 2: PLACEHOLDER ALANLAR ----------------
-        # Gerçek sistemde de şu an sabit 0 geliyor; CAN entegrasyonu
-        # yapılana kadar arayüz bunları gri "—" olarak gösterecek.
-        "motorRPM": 0,          # inverter CAN'ı gelince gerçek olacak
-        "batteryCurrent": 0,    # BMS CAN'ı gelince
-        "batterySOC": 0,        # BMS CAN'ı gelince
-        "motorTemp": 0,         # inverter CAN'ı gelince
-        "inverterTemp": 0,      # inverter CAN'ı gelince
-        "maxCellTemp": 0,       # BMS CAN'ı gelince
-
-        # ---------------- Bölüm 3: BAĞLANTI SAĞLIĞI ----------------
-        # Gerçekte pit tarafında seqNumber/uptimeMs'ten HESAPLANIR,
-        # paketin içinde gelmez; simülasyonda temsili üretiyoruz.
-        "latencyMs": random.randint(20, 60),   # ms
-        "rssiDbm": random.randint(-90, -60),   # dBm (LoRa sinyal gücü)
-    }
-
-
 def state_text(state_code: int) -> str:
     """
     vehicleState sayısını okunur metne çevirir.
@@ -98,3 +51,102 @@ def state_text(state_code: int) -> str:
     arayüzü asla çökmemeli, bilinmeyen veriyi de göstermeli.
     """
     return VEHICLE_STATES.get(state_code, f"? ({state_code})")
+
+
+def _drift(current: float, low: float, high: float, step: float) -> float:
+    """
+    "Random walk" (rastgele yürüyüş): bir değeri, önceki değerine yakın
+    kalacak şekilde küçük bir miktar rastgele değiştirir. Böylece grafik
+    testere dişi gibi zıplamak yerine gerçek sensör gibi yumuşak akar.
+
+    - current: mevcut (önceki) değer
+    - low, high: değerin çıkabileceği alt/üst sınır
+    - step: bir adımda en fazla ne kadar değişebileceği
+
+    max(low, min(high, ...)) kalıbı "clamp"tir: değeri sınırların içinde
+    tutar (sınırı aşarsa sınırda sabitler).
+    """
+    current += random.uniform(-step, step)
+    return max(low, min(high, current))
+
+
+class FakeDataSource:
+    """
+    Sahte telemetri paketleri üreten kaynak.
+
+    Kullanımı:
+        source = FakeDataSource()
+        packet = source.next_packet()   # her çağrıda bir sonraki paket
+
+    İleride gerçek seri port okuyucusu da AYNI arayüzü sunacak
+    (bir next_packet() metodu, aynı sözlük formatı), böylece arayüz kodu
+    değişmeden veri kaynağı değiştirilebilecek.
+    """
+
+    def __init__(self):
+        # Paket sıra numarası (seqNumber). Her pakette 1 artar; gerçek
+        # sistemde kayıp paket hesabı bu sayaçtan yapılır.
+        self.seq_number = 0
+
+        # Canlı değerlerin BAŞLANGIÇ durumları. next_packet her çağrıldığında
+        # bunları _drift ile azıcık değiştirip yeni paketi buradan üretiyoruz.
+        self._apps = 20.0      # gaz pedalı, %
+        self._brake = 5.0      # fren basıncı, bar
+        self._torque = 40.0    # tork komutu, Nm
+        self._voltage = 395.0  # HV batarya gerilimi, V
+
+    def next_packet(self) -> dict:
+        """
+        Bir sonraki sahte telemetri paketini üretir ve sözlük (dict) olarak
+        döndürür. Dönen sözlüğün anahtarları README'deki alan adlarıyla
+        birebir aynıdır; böylece gerçek paket ayrıştırıcı (parser) yazıldığında
+        format uyuşur.
+        """
+        self.seq_number += 1
+
+        # Canlı değerleri yumuşakça güncelle (random walk).
+        self._apps    = _drift(self._apps,    0,   100, step=6)
+        self._brake   = _drift(self._brake,   0,   50,  step=4)
+        self._torque  = _drift(self._torque,  0,   200, step=12)
+        self._voltage = _drift(self._voltage, 380, 400, step=1.2)
+
+        return {
+            # ---------------- Bölüm 1: CANLI ALANLAR ----------------
+            "seqNumber": self.seq_number,
+            "uptimeMs": self.seq_number * 100,   # 10 Hz'de her paket 100 ms arayla
+
+            # Simülasyonda hep READY (1); arıza senaryosunu denemek istersen
+            # vehicleState'i 3 ve faultCode'u 0 dışı bir değer yap.
+            "vehicleState": 1,
+            "faultCode": 0,              # 0 = arıza yok
+
+            "appsPercent":    self._apps,
+            "brakePressure":  self._brake,
+            "torqueCommand":  self._torque,
+            "batteryVoltage": self._voltage,
+
+            # systemFlags bitleri: gerçekte tek bir sayının bitleri olarak
+            # gelir (bit maskeleme ile çözülür); simülasyonda kolaylık olsun
+            # diye ayrı ayrı bool tutuyoruz.
+            "airMinus": True,        # AIR- kontaktörü kapalı (devrede)
+            "airPlus": True,         # AIR+ kontaktörü kapalı (devrede)
+            "precharge": True,       # precharge tamamlandı
+            "sdcClosed": True,       # shutdown circuit kapalı (OK)
+            "inverterEnable": True,  # inverter etkin
+
+            # ---------------- Bölüm 2: PLACEHOLDER ALANLAR ----------------
+            # Gerçek sistemde de şu an sabit 0 geliyor; CAN entegrasyonu
+            # yapılana kadar arayüz bunları gri "—" olarak gösterecek.
+            "motorRPM": 0,          # inverter CAN'ı gelince gerçek olacak
+            "batteryCurrent": 0,    # BMS CAN'ı gelince
+            "batterySOC": 0,        # BMS CAN'ı gelince
+            "motorTemp": 0,         # inverter CAN'ı gelince
+            "inverterTemp": 0,      # inverter CAN'ı gelince
+            "maxCellTemp": 0,       # BMS CAN'ı gelince
+
+            # ---------------- Bölüm 3: BAĞLANTI SAĞLIĞI ----------------
+            # Gerçekte pit tarafında seqNumber/uptimeMs'ten HESAPLANIR,
+            # paketin içinde gelmez; simülasyonda temsili üretiyoruz.
+            "latencyMs": random.randint(20, 60),   # ms
+            "rssiDbm": random.randint(-90, -60),   # dBm (LoRa sinyal gücü)
+        }
