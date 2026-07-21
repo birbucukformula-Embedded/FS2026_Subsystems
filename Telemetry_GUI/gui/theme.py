@@ -54,6 +54,13 @@ COLOR_BORDER_SUBTLE = "rgba(255, 255, 255, 0.08)" # sitedeki soluk beyaz çizgil
 # için ayrı, hex biçiminde bir renk tanımlıyoruz.
 COLOR_CHART_AXIS = "#3A3A3A"   # grafik ekseni ve ızgara çizgileri (soluk gri)
 
+# Ana grafikteki farklı çizgileri (seri) birbirinden ayırmak için renkler.
+# Yeşilden kaçınıyoruz (önceki geri bildirim: yeşil sırıtıyor). Kırmızı ana
+# renk; mavi ve amber siyah zeminde net ayrışır ve markayla uyumlu durur.
+COLOR_SERIES_1 = "#E8000D"   # kırmızı  (örn: gaz pedalı)
+COLOR_SERIES_2 = "#33B5E5"   # açık mavi (örn: fren basıncı)
+COLOR_SERIES_3 = "#FFC107"   # amber    (örn: tork komutu)
+
 # ---------------------------------------------------------------------------
 # HAZIR STİL PARÇALARI
 # ---------------------------------------------------------------------------
@@ -63,10 +70,23 @@ STYLE_WINDOW = f"background-color: {COLOR_BG}; color: {COLOR_TEXT};"
 # Veri kartı: koyu yüzey + soluk kenarlık + yuvarlak köşe.
 # Kenarlığı kırmızı değil SOLUK BEYAZ yaptık; kırmızıyı sadece bölüm
 # başlıklarındaki vurgu çizgisine sakladık (site de böyle yapıyor).
+# :hover -> fare üzerine gelince kenarlık kırmızıya döner: kart tıklanabilir
+# (detay grafiği açar) olduğunun görsel ipucu.
 STYLE_CARD = (
     f"QFrame {{"
     f"  background-color: {COLOR_SURFACE};"
     f"  border: 1px solid {COLOR_BORDER_SUBTLE};"
+    f"  border-radius: 8px;"
+    f"}}"
+    f"QFrame:hover {{ border: 1px solid {COLOR_ACCENT}; }}"
+)
+
+# Seçili (detay grafiği açık) kart: kenarlık takım kırmızısı — hangi kartın
+# grafiğinin açık olduğunu belli eder.
+STYLE_CARD_SELECTED = (
+    f"QFrame {{"
+    f"  background-color: {COLOR_SURFACE};"
+    f"  border: 1px solid {COLOR_ACCENT};"
     f"  border-radius: 8px;"
     f"}}"
 )
@@ -125,4 +145,40 @@ STYLE_BUTTON = (
     f"}}"
     # Fare üzerine gelince biraz koyulaşsın (basit bir geri bildirim).
     f"QPushButton:hover {{ background-color: #B00009; }}"
+)
+
+# İKİNCİL buton (örn: "Simülasyona Geç"): koyu zemin + soluk kenarlık.
+# Birincil kırmızı butondan ayrışsın diye daha sakin bir görünüm.
+STYLE_BUTTON_SECONDARY = (
+    f"QPushButton {{"
+    f"  background-color: {COLOR_SURFACE};"
+    f"  border: 1px solid {COLOR_BORDER_SUBTLE};"
+    f"  border-radius: 6px;"
+    f"  padding: 5px 14px;"
+    f"  color: {COLOR_TEXT};"
+    f"  font-weight: bold;"
+    f"  font-size: 12px;"
+    f"}}"
+    f"QPushButton:hover {{ border: 1px solid {COLOR_ACCENT}; }}"
+)
+
+# Ana grafiğin üstündeki seri aç/kapa kutucukları (QCheckBox).
+# İşaretliyken kutu takım kırmızısı olur.
+STYLE_CHECKBOX = (
+    f"QCheckBox {{"
+    f"  color: {COLOR_TEXT_MUTED};"
+    f"  font-size: 12px;"
+    f"  font-weight: bold;"
+    f"  spacing: 6px;"
+    f"}}"
+    f"QCheckBox::indicator {{"
+    f"  width: 13px; height: 13px;"
+    f"  border-radius: 3px;"
+    f"  border: 1px solid {COLOR_BORDER_SUBTLE};"
+    f"  background-color: {COLOR_SURFACE};"
+    f"}}"
+    f"QCheckBox::indicator:checked {{"
+    f"  background-color: {COLOR_ACCENT};"
+    f"  border: 1px solid {COLOR_ACCENT};"
+    f"}}"
 )

@@ -90,10 +90,21 @@ class FakeDataSource:
 
         # Canlı değerlerin BAŞLANGIÇ durumları. next_packet her çağrıldığında
         # bunları _drift ile azıcık değiştirip yeni paketi buradan üretiyoruz.
-        self._apps = 20.0      # gaz pedalı, %
-        self._brake = 5.0      # fren basıncı, bar
-        self._torque = 40.0    # tork komutu, Nm
-        self._voltage = 395.0  # HV batarya gerilimi, V
+        # NOT: Simülasyonda ARTIK TÜM alanları üretiyoruz (eskiden RPM, akım,
+        # SOC, sıcaklıklar sabit 0 idi). Böylece simülasyon modunda ekrandaki
+        # her kart ve grafik gerçekçi veri gösterir. Gerçek araçta bu alanlar
+        # CAN entegrasyonu gelene kadar yine gelmeyebilir — o durumu artık
+        # "veri geldi mi?" mantığıyla (paket içinde var mı) ayırt ediyoruz.
+        self._apps = 20.0            # gaz pedalı, %
+        self._brake = 5.0            # fren basıncı, bar
+        self._torque = 40.0          # tork komutu, Nm
+        self._voltage = 395.0        # HV batarya gerilimi, V
+        self._rpm = 3000.0           # motor devri, RPM
+        self._current = 50.0         # batarya akımı, A
+        self._soc = 85.0             # şarj durumu, %
+        self._motor_temp = 45.0      # motor sıcaklığı, °C
+        self._inverter_temp = 40.0   # inverter sıcaklığı, °C
+        self._cell_temp = 35.0       # en yüksek hücre sıcaklığı, °C
 
     def next_packet(self) -> dict:
         """
@@ -105,10 +116,16 @@ class FakeDataSource:
         self.seq_number += 1
 
         # Canlı değerleri yumuşakça güncelle (random walk).
-        self._apps    = _drift(self._apps,    0,   100, step=6)
-        self._brake   = _drift(self._brake,   0,   50,  step=4)
-        self._torque  = _drift(self._torque,  0,   200, step=12)
-        self._voltage = _drift(self._voltage, 380, 400, step=1.2)
+        self._apps          = _drift(self._apps,          0,    100,  step=6)
+        self._brake         = _drift(self._brake,         0,    50,   step=4)
+        self._torque        = _drift(self._torque,        0,    200,  step=12)
+        self._voltage       = _drift(self._voltage,       380,  400,  step=1.2)
+        self._rpm           = _drift(self._rpm,           0,    6000, step=200)
+        self._current       = _drift(self._current,       -20,  180,  step=8)
+        self._soc           = _drift(self._soc,           0,    100,  step=0.3)
+        self._motor_temp    = _drift(self._motor_temp,    20,   90,   step=0.8)
+        self._inverter_temp = _drift(self._inverter_temp, 20,   80,   step=0.7)
+        self._cell_temp     = _drift(self._cell_temp,     20,   60,   step=0.5)
 
         return {
             # ---------------- Bölüm 1: CANLI ALANLAR ----------------
@@ -134,19 +151,21 @@ class FakeDataSource:
             "sdcClosed": True,       # shutdown circuit kapalı (OK)
             "inverterEnable": True,  # inverter etkin
 
-            # ---------------- Bölüm 2: PLACEHOLDER ALANLAR ----------------
-            # Gerçek sistemde de şu an sabit 0 geliyor; CAN entegrasyonu
-            # yapılana kadar arayüz bunları gri "—" olarak gösterecek.
-            "motorRPM": 0,          # inverter CAN'ı gelince gerçek olacak
-            "batteryCurrent": 0,    # BMS CAN'ı gelince
-            "batterySOC": 0,        # BMS CAN'ı gelince
-            "motorTemp": 0,         # inverter CAN'ı gelince
-            "inverterTemp": 0,      # inverter CAN'ı gelince
-            "maxCellTemp": 0,       # BMS CAN'ı gelince
+            # ---------------- Bölüm 2: (eskiden placeholder) ----------------
+            # Gerçek araçta bu alanlar CAN entegrasyonu gelene kadar
+            # gelmeyebilir; ama SİMÜLASYONDA hepsini üretiyoruz ki bütün
+            # ekran (kartlar + grafikler) dolu ve test edilebilir olsun.
+            "motorRPM": self._rpm,
+            "batteryCurrent": self._current,
+            "batterySOC": self._soc,
+            "motorTemp": self._motor_temp,
+            "inverterTemp": self._inverter_temp,
+            "maxCellTemp": self._cell_temp,
 
             # ---------------- Bölüm 3: BAĞLANTI SAĞLIĞI ----------------
             # Gerçekte pit tarafında seqNumber/uptimeMs'ten HESAPLANIR,
             # paketin içinde gelmez; simülasyonda temsili üretiyoruz.
+            "lossPercent": 0.0,                    # paket kayıp oranı, %
             "latencyMs": random.randint(20, 60),   # ms
             "rssiDbm": random.randint(-90, -60),   # dBm (LoRa sinyal gücü)
         }
