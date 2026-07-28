@@ -2,34 +2,70 @@
 
 Pit alanındaki mühendislerin pistteki aracı canlı olarak takip etmesi için geliştirilen masaüstü telemetri programı. Raspberry Pi üzerinden LoRa ile gelen araç verisini (hız, sıcaklık vb.) seri port üzerinden okuyup gerçek zamanlı çizgi grafiklere döker.
 
-## Proje yapısı
+## 3 Kişilik Ekip Görev Dağılımı, Sistem Mimarisi ve Çalışma Rehberi
+
+Bu proje, yüksek frekanslı seri port okuması ile donma yaratmayan gerçek zamanlı grafik çizimini entegre ettiği için 3 kişilik bir ekip tarafından paralel olarak geliştirilebilir. Her mühendisin çalışma alanı ve dosyası çakışma (merge conflict) olmayacak şekilde ayrılmıştır:
 
 ```
 Telemetry_GUI/
-├── main.py
-├── README.md
-├── requirements.txt
-├── .gitignore
-├── logs/
-└── assets/
+│
+├── main.py                     # Uygulamayı başlatan tek giriş noktası (GUI'yi ve Worker'ı bağlar)
+├── README.md                   # Kurulum, mimari ve geliştirme rehberi
+├── requirements.txt            # PyQt5, pyqtgraph, pyserial, numpy
+├── .gitignore                  # venv/, __pycache__/, logs/*.csv
+│
+├── core/                       # [Mühendis 1 ve Mühendis 2'nin Sorumluluk Alanı]
+│   ├── __init__.py
+│   ├── serial_worker.py        # 🧑‍💻 Mühendis 1: COM port bağlantısı ve QThread ile arka planda okuma
+│   ├── simulator.py            # 🧑‍💻 Mühendis 1: Sahte telemetri verisi üreten test modülü (10 Hz)
+│   ├── parser.py               # 🧑‍💻 Mühendis 2: Metin/Binary ayrıştırıcı, CRC ve sağlık metrikleri
+│   └── logger.py               # 🧑‍💻 Mühendis 2: Zaman damgasıyla CSV/JSON dosyasına kaydetme
+│
+├── gui/                        # [Mühendis 3'ün Sorumluluk Alanı]
+│   ├── __init__.py
+│   ├── main_window.py          # Pit ekranı ana penceresi, rozetler, gauge'ler, menüler
+│   ├── plot_widget.py          # 🧑‍💻 Mühendis 3: PyQtGraph ile donma yaratmayan canlı çizgi grafik
+│   └── widgets/                # 🧑‍💻 Mühendis 3: Özel UI rozetleri ve göstergeler
+│       ├── __init__.py
+│       ├── badges.py           # AIR-, SDC vb. durum rozetleri ve arıza etiketleri
+│       └── gauges.py           # Gaz ve fren basıncı için yarım daire iğneli göstergeler
+│
+├── assets/                     # Takım logoları, ikonlar ve QSS temaları
+└── logs/                       # Yarış ve test sırasında oluşan telemetri CSV kayıtları (.gitkeep)
 ```
 
-## Bölümler
+### Ekip Üyelerinin Görevleri ve Sorumlu Olduğu Dosyalar
 
-**`main.py`**
-Uygulamanın tek giriş noktası. PyQt5 penceresini oluşturur, seri port bağlantısını yönetir, pyqtgraph ile gelen veriyi canlı grafiğe çizer. Proje şu an tek dosyalık (monolitik) bir yapıda; ileride büyürse `gui/` ve `core/` gibi ayrı modüllere bölünebilir.
+| Mühendis | Sorumluluk Alanı | Sorumlu Olduğu Dosyalar | Temel Görevler ve Beklenen Sinyaller / Arayüzler |
+|---|---|---|---|
+| **🧑‍💻 Mühendis 1** | Seri Port, Arka Plan İletişimi & Simülatör | `core/serial_worker.py`<br>`core/simulator.py` | • COM portlarını listeleme (`serial.tools.list_ports`)<br>• Bloklayıcı okumayı `QThread` içinde yapmak (`SerialWorker`)<br>• ⭐ **Simülatör:** Donanım yokken saniyede 10 kere sahte telemetri verisi üreten test modu<br>• Sinyaller: `raw_line_received(str)`, `connection_status(bool, str)` |
+| **🧑‍💻 Mühendis 2** | Veri Ayrıştırma, CRC & CSV Loglama | `core/parser.py`<br>`core/logger.py` | • Ham string (`parse_text_line`) veya binary paket (`parse_binary_packet`) çözme<br>• `seqNumber` takibi ile Paket Kayıp (%) ve Gecikme (`latencyMs`) hesaplama<br>• Gelen paketleri `logs/` altında tarih/saat damgalı CSV dosyasına yazma |
+| **🧑‍💻 Mühendis 3** | Arayüz (UI/UX) & Canlı Grafik | `gui/main_window.py`<br>`gui/plot_widget.py`<br>`gui/widgets/` | • `PyQtGraph` + `collections.deque(maxlen=200)` ile 60 FPS akıcı grafik (`RealtimePlotWidget`)<br>• `QTimer` (30-33 ms) ile ayrık render (Decoupled Rendering)<br>• Pit ekranı rozetleri (`StatusBadge`) ve iğneli göstergeler (`HalfCircleGauge`) |
 
-**`requirements.txt`**
-Projenin çalışması için gereken Python kütüphaneleri (PyQt5, pyqtgraph, pyserial, numpy). Kurulum: `pip install -r requirements.txt`
+> **💡 Ekip İş Birliği Notu:** Arayüz tarafında görsel bileşen sayısı fazla olduğu için, **1. ve 2. Kişiler** kendi backend/parser modüllerini tamamladıklarında durum rozetlerinin (`AIR-`, `SDC` vb. yeşil/kırmızı göstergelerin) bağlanmasında **3. Kişiye** destek olacaktır.
 
-**`logs/`**
-Yarış/test sırasında kaydedilen telemetri verilerinin (CSV) tutulduğu klasör. Sonradan analiz için kullanılır.
+### Sistem Mimarisi ve Veri Akışı
 
-**`assets/`**
-Arayüzde kullanılan ikon, logo veya stil dosyaları.
+```mermaid
+graph TD
+    subgraph ARAÇ [Pistteki Araç - TX]
+        SENS[Sensörler & CAN-Bus] --> VCU[STM32 / VCU]
+        VCU -- LoRa / RF 433-868MHz --> LORA_TX((LoRa Verici))
+    end
 
-**`.gitignore`**
-Sürüm kontrolüne dahil edilmeyecek dosyalar: sanal ortam (`venv/`), derlenmiş Python dosyaları (`__pycache__/`), ve `logs/` altındaki kayıt verileri.
+    subgraph PIT [Pit Alanı - RX]
+        LORA_RX((LoRa Alıcı)) -- USB / COM Port --> PC[Pit Bilgisayarı COM3/COM4]
+    end
+
+    subgraph SW [Telemetry GUI Yazılım Mimarisi]
+        PC --> W[Mühendis 1: SerialWorker QThread]
+        W -- raw_line_received --> P[Mühendis 2: parser.py]
+        P -- Doğrulanmış Sözlük --> L[Mühendis 2: TelemetryCSVLogger]
+        L --> CSV[(logs/ CSV Dosyası)]
+        P -- packet dict --> G[Mühendis 3: MainWindow & RealtimePlotWidget]
+        G -- Circular Buffer + QTimer 30FPS --> DISPLAY[Pit Mühendisi Ekranı]
+    end
+```
 
 
 # FST-26 Pit Telemetri Veri Rehberi
