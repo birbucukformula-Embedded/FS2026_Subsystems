@@ -5,62 +5,67 @@ core/serial_worker.py — SERİ PORT İLETİŞİMİ VE ARKA PLAN İŞ PARÇACIĞ
 
 SORUMLU MÜHENDİS: 🧑‍💻 MÜHENDİS 1 (Seri Port İletişimi & Backend)
 ------------------------------------------------------------------
-Bu dosya, bilgisayara bağlı COM portlarının taraması, portun seçilen Baudrate (örn. 115200)
-ile açılması/kapatılması ve seri porttan veri okuma işleminin arayüzü KİLİTLEMEDEN (freeze olmadan)
-arka planda çalışmasını sağlamak için oluşturulmuş bir İSKELET / ŞABLON dosyadır.
+Bu dosya, bilgisayara bağlı COM portlarının taraması, portun seçilen Baudrate (115200)
+ile açılması/kapatılması ve seri porttan veri okuma işleminin arayüzü kilitlemeden
+arka planda çalışmasını sağlar.
 
-GÖREV TANIMI VE ADIMLAR (MÜHENDİS 1 İÇİN TODO REHBERİ):
-  1. `list_available_ports()`:
-     - `serial.tools.list_ports.comports()` kullanarak bilgisayara takılı tüm COM portlarını bul ve
-       `[("COM3", "CP2102 USB to UART Bridge"), ...]` formatında liste döndür.
-  2. `SerialWorker(QThread)` Sınıfı:
-     - `ser.readline()` bloklayıcı (blocking) bir işlem olduğu için bu okuma KESİNLİKLE ana
-       arayüz (GUI) thread'inde yapılmamalıdır; `QThread` içindeki `run()` metodunda yapılmalıdır.
-     - Okunan ham satırı (`str` veya `bytes`) `raw_line_received` sinyaliyle ilet (Mühendis 2'nin
-       parser katmanı bu sinyali dinleyecek).
-     - Port açma/kapama durumlarında `connection_status` sinyali, hatalarda `error_occurred` sinyali fırlat.
+Ham binary ve XOR checksum doğrulaması yapacak şekilde güncellenmiştir.
 """
 
+import serial
+import serial.tools.list_ports
 from PyQt5.QtCore import QThread, pyqtSignal
-
-# TODO (MÜHENDİS 1): pyserial kütüphanesini import edin
-# import serial
-# import serial.tools.list_ports
 
 
 def list_available_ports() -> list:
-    """
-    Bilgisayara bağlı mevcut tüm COM portlarını listeler.
+    """Bilgisayara bağlı mevcut tüm COM portlarını listeler."""
+    return [(port.device, port.description) for port in serial.tools.list_ports.comports()]
 
-    Dönüş Formatı (Örnek):
-        [
-            ("COM3", "CP2102 USB to UART Bridge Controller"),
-            ("COM4", "USB Serial Port (FTDI)")
-        ]
 
-    TODO (MÜHENDİS 1):
-        - serial.tools.list_ports.comports() metodunu çağırın.
-        - Her portun device (COM port adı) ve description (açıklama) alanlarını çift (tuple)
-          olarak listeye ekleyip döndürün.
+def find_vehicle_port() -> str:
     """
-    # --- MÜHENDİS 1 KOD ALANI BAŞLANGICI ---
-    # Örnek taslak:
-    # return [(port.device, port.description) for port in serial.tools.list_ports.comports()]
-    return []
-    # --- MÜHENDİS 1 KOD ALANI BİTİŞİ ---
+    Bilgisayara bağlı seri portları tarar ve yaygın USB-UART dönüştürücü
+    çiplerini arayarak LoRa alıcısını otomatik tespit etmeye çalışır.
+    """
+    LORA_PORT_HINTS = [
+        "ftdi", "ft232",             # FTDI entegreleri
+        "cp210", "silicon labs",     # Silicon Labs CP210x entegreleri
+        "ch340", "ch341", "wch",     # WCH CH340 entegreleri (ucuz klonlar)
+        "usb to uart", "usb serial", # Genel dönüştürücüler
+        "usbmodem", "uart"           # macOS / Linux isimlendirmeleri
+    ]
+    
+    for port in serial.tools.list_ports.comports():
+        device_info = " ".join([
+            str(port.description).lower(),
+            str(port.manufacturer).lower(),
+            str(port.hwid).lower()
+        ])
+        
+        if any(hint in device_info for hint in LORA_PORT_HINTS):
+            return port.device
+            
+    return None
+
+
+def calculate_xor_checksum(data_bytes: bytes) -> int:
+    """Verilen byte dizisinin tüm elemanlarını XOR'layarak tek bir checksum üretir."""
+    checksum = 0
+    for b in data_bytes:
+        checksum ^= b
+    return checksum
 
 
 class SerialWorker(QThread):
     """
     Seri porttan arka planda okuma yapan QThread sınıfı.
 
-    SİNYALLER (OUTBOUND INTERFACES):
-        - raw_line_received(str)   : Seri porttan \n ile biten ham bir satır okunduğunda fırlatılır.
-        - connection_status(bool, str) : Bağlantı açıldığında (True, "COM3 Bağlı"), kapandığında (False, "Bağlantı Kesildi").
-        - error_occurred(str)      : Okuma/bağlantı hatası oluştuğunda arayüzü bilgilendirmek için fırlatılır.
+    SİNYALLER:
+        - raw_line_received(str)   : Doğrulanmış ham payload byte'larını hex string olarak fırlatır.
+        - connection_status(bool, str) : Bağlantı durumunu bildirir.
+        - error_occurred(str)      : Hata durumlarını arayüze bildirir.
     """
 
-    # --- SİNYAL TANIMLARI ---
     raw_line_received = pyqtSignal(str)
     connection_status = pyqtSignal(bool, str)
     error_occurred = pyqtSignal(str)
@@ -70,49 +75,61 @@ class SerialWorker(QThread):
         self.port_name = port_name
         self.baudrate = baudrate
         self.is_running = False
-        # TODO (MÜHENDİS 1): serial.Serial nesnesi tutmak için bir nitelik (self.serial_port = None) tanımlayın.
+        self.serial_port = None
 
     def run(self):
-        """
-        QThread başlatıldığında (worker.start()) otomatik çağıran metot.
-        Arka planda (ayrı iş parçacığında) sonsuz döngüde seri port okur.
-
-        TODO (MÜHENDİS 1):
-            1. serial.Serial ile self.port_name portunu belirtilen self.baudrate hızında açın.
-            2. Başarılıysa self.connection_status.emit(True, f"BAĞLI: {self.port_name}") çağırın.
-            3. while self.is_running: döngüsü oluşturarak ser.readline() ile satır okuyun.
-            4. Okunan satırı .decode('utf-8', errors='ignore').strip() ile temizleyip
-               self.raw_line_received.emit(line) sinyaliyle yayınlayın.
-            5. Bağlantı koptuğunda veya SerialException olduğunda self.error_occurred sinyali verin.
-            6. Döngü bittiğinde (stop() çağrıldığında) portu güvenlice kapatıp
-               self.connection_status.emit(False, "KESİLDİ") verin.
-        """
-        # --- MÜHENDİS 1 KOD ALANI BAŞLANGICI ---
+        """Arka planda (ayrı iş parçacığında) seri porttan veri okur."""
         self.is_running = True
-        # YÖNERGE ÖRNEĞİ:
-        # try:
-        #     self.serial_port = serial.Serial(self.port_name, self.baudrate, timeout=1)
-        #     self.connection_status.emit(True, f"BAĞLI: {self.port_name}")
-        #     while self.is_running and self.serial_port.is_open:
-        #         line = self.serial_port.readline().decode("utf-8", errors="ignore").strip()
-        #         if line:
-        #             self.raw_line_received.emit(line)
-        # except Exception as e:
-        #     self.error_occurred.emit(str(e))
-        # finally:
-        #     self.stop()
-        pass
-        # --- MÜHENDİS 1 KOD ALANI BİTİŞİ ---
+        try:
+            self.serial_port = serial.Serial(self.port_name, self.baudrate, timeout=0.1)
+            self.connection_status.emit(True, f"BAĞLI: {self.port_name}")
+            
+            while self.is_running and self.serial_port.is_open:
+                # 1. İlk header byte'ını (0xAA) ara
+                b1 = self.serial_port.read(1)
+                if not b1 or b1[0] != 0xAA:
+                    continue
+                
+                # 2. İkinci header byte'ını (0x55) doğrula
+                b2 = self.serial_port.read(1)
+                if not b2 or b2[0] != 0x55:
+                    continue
+                
+                # 3. Length (data uzunluğu) byte'ını oku
+                len_byte = self.serial_port.read(1)
+                if not len_byte or len_byte[0] == 0:
+                    continue
+                payload_size = len_byte[0]
+                
+                # 4. Dinamik uzunluğa göre payload oku
+                payload = self.serial_port.read(payload_size)
+                if len(payload) != payload_size:
+                    continue
+                
+                # 5. Checksum byte'ını oku (1 byte)
+                checksum_byte = self.serial_port.read(1)
+                if not checksum_byte or len(checksum_byte) != 1:
+                    continue
+                
+                # 6. Checksum kontrolü yap
+                if calculate_xor_checksum(payload) == checksum_byte[0]:
+                    # Paket geçerli! Hex formatında sinyali fırlat.
+                    self.raw_line_received.emit(payload.hex())
+                else:
+                    # Bozuk paket, yoksay
+                    pass
+                    
+        except Exception as e:
+            self.error_occurred.emit(str(e))
+        finally:
+            self.stop()
 
     def stop(self):
-        """
-        Arka plan döngüsünü durdurmak ve portu kapatmak için arayüz tarafından çağrılır.
-
-        TODO (MÜHENDİS 1):
-            - self.is_running bayrağını False yapın.
-            - Açık seri port varsa ve isOpen() ise close() metodunu çağırın.
-            - self.wait() veya pyqtSignal ile kapanışı arayüze bildirin.
-        """
-        # --- MÜHENDİS 1 KOD ALANI BAŞLANGICI ---
+        """Arka plan döngüsünü durdurmak ve portu kapatmak için çağrılır."""
         self.is_running = False
-        # --- MÜHENDİS 1 KOD ALANI BİTİŞİ ---
+        if self.serial_port and self.serial_port.is_open:
+            try:
+                self.serial_port.close()
+            except Exception:
+                pass
+        self.connection_status.emit(False, "Bağlantı Kesildi")
