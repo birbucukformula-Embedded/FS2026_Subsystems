@@ -23,10 +23,33 @@ GÖREV TANIMI VE ADIMLAR (MÜHENDİS 2 İÇİN TODO REHBERİ):
 import json
 import struct
 import time
+from string import hexdigits
 
 # README'de Tanımlı Örnek Alan Adları (Arayüz bu anahtarları bekler):
 # "seqNumber", "uptimeMs", "vehicleState", "faultCode", "appsPercent",
 # "brakePressure", "torqueCommand", "batteryVoltage", "airMinus", "airPlus", ...
+
+
+def _coerce_value(value):
+    """String değerleri sayıya çevirmeye çalışır; mümkün değilse olduğu gibi döndürür.
+
+    Bu yardımcı fonksiyon, Mühendis 1'den gelen metin verisini GUI, grafik ve CSV loglama
+    tarafında güvenli biçimde kullanabilmek için tip dönüşümü yapar.
+    """
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return ""
+        lowered = value.lower()
+        if lowered in {"true", "false"}:
+            return lowered == "true"
+        try:
+            if "." in value:
+                return float(value)
+            return int(value)
+        except ValueError:
+            return value
+    return value
 
 
 def parse_text_line(raw_line: str) -> dict:
@@ -48,10 +71,41 @@ def parse_text_line(raw_line: str) -> dict:
         - Değerleri sayıya (int/float) çevirecek bir yardımcı fonksiyon kullanın.
     """
     # --- MÜHENDİS 2 KOD ALANI BAŞLANGICI ---
-    # Taslak yönerge:
-    # 1) Try json.loads(raw_line)
-    # 2) If ValueError -> parse as "key: value, key: value"
-    return None
+    # Bu bölüm, Mühendis 1'in serial_worker/simulator'dan verdiği ham veriyi
+    # GUI'nin anlayacağı ortak telemetri sözlüğüne dönüştürür.
+    # Amaç: JSON, anahtar-değer metni ve hex payload'ları aynı arayüzle işleyebilmek.
+    if raw_line is None:
+        return {}
+
+    if isinstance(raw_line, bytes):
+        return parse_binary_packet(raw_line)
+
+    line = str(raw_line).strip()
+    if not line:
+        return {}
+
+    try:
+        parsed = json.loads(line)
+        if isinstance(parsed, dict):
+            return {key: _coerce_value(value) for key, value in parsed.items()}
+    except (TypeError, ValueError):
+        pass
+
+    compact = "".join(line.split())
+    if len(compact) % 2 == 0 and all(ch in hexdigits for ch in compact):
+        try:
+            return parse_binary_packet(bytes.fromhex(compact))
+        except ValueError:
+            pass
+
+    packet = {}
+    for part in line.split(","):
+        if ":" not in part:
+            continue
+        key, value = part.split(":", 1)
+        packet[key.strip()] = _coerce_value(value.strip())
+
+    return packet
     # --- MÜHENDİS 2 KOD ALANI BİTİŞİ ---
 
 
@@ -68,7 +122,66 @@ def parse_binary_packet(raw_bytes: bytes) -> dict:
         - Ayrıştırılan alanları README dokümanındaki standart isimlerle bir dict içinde döndürün.
     """
     # --- MÜHENDİS 2 KOD ALANI BAŞLANGICI ---
-    return {}
+    # Bu bölüm, araçtan gelen binary telemetri paketini C struct yapısına uygun biçimde
+    # çözerek UI tarafında kullanılacak alanlara dönüştürür.
+    # Amaç: grafikler, rozetler ve sayısal kartlar için doğru değerleri hazırlamak.
+    if isinstance(raw_bytes, str):
+        raw_bytes = bytes.fromhex(raw_bytes)
+
+    if not isinstance(raw_bytes, (bytes, bytearray)):
+        return {}
+
+    packet_bytes = bytes(raw_bytes)
+    fmt = "<BBBBhhHhBBBBBI"
+    expected_size = struct.calcsize(fmt)
+    if len(packet_bytes) < expected_size:
+        return {}
+
+    (
+        vehicle_state_code,
+        fault_code,
+        apps_percent,
+        brake_pressure,
+        torque_command,
+        motor_rpm,
+        battery_voltage,
+        battery_current,
+        battery_soc,
+        motor_temp,
+        inverter_temp,
+        max_cell_temp,
+        system_flags,
+        uptime_ms,
+    ) = struct.unpack(fmt, packet_bytes[:expected_size])
+
+    vehicle_state_map = {
+        1: "READY",
+        2: "DRIVING",
+        3: "FAULT",
+    }
+
+    return {
+        "vehicleState": vehicle_state_map.get(vehicle_state_code, str(vehicle_state_code)),
+        "faultCode": fault_code,
+        "appsPercent": float(apps_percent),
+        "brakePressure": float(brake_pressure),
+        "torqueCommand": float(torque_command),
+        "motorRPM": motor_rpm,
+        "batteryVoltage": battery_voltage / 10.0,
+        "batteryCurrent": float(battery_current),
+        "batterySOC": battery_soc,
+        "motorTemp": motor_temp,
+        "inverterTemp": inverter_temp,
+        "maxCellTemp": max_cell_temp,
+        "systemFlags": {
+            "AIR-": bool(system_flags & 0x01),
+            "AIR+": bool(system_flags & 0x02),
+            "Precharge": bool(system_flags & 0x04),
+            "SDC Closed": bool(system_flags & 0x08),
+            "Inverter Enable": bool(system_flags & 0x10),
+        },
+        "uptimeMs": uptime_ms,
+    }
     # --- MÜHENDİS 2 KOD ALANI BİTİŞİ ---
 
 
@@ -96,11 +209,39 @@ class ConnectionHealthTracker:
         Pakete 'lossPercent' ve 'latencyMs' alanlarını ekleyip/güncelleyerek geri döndürür.
         """
         # --- MÜHENDİS 2 KOD ALANI BAŞLANGICI ---
-        # Örnek mantık:
-        # seq = packet.get("seqNumber")
-        # if seq is not None and self.last_seq is not None:
-        #     if seq > self.last_seq + 1:
-        #         self.total_lost += (seq - self.last_seq - 1)
-        # ...
+        # Bu bölüm, paket kaybı ve gecikmeyi hesaplayarak arayüzde alt şeritte gösterilecek
+        # metrikleri hazırlar. Böylece Mühendis 3'ün UI tarafı doğrudan bu değerleri kullanabilir.
+        packet = dict(packet)
+        seq = packet.get("seqNumber")
+
+        if seq is not None:
+            try:
+                seq = int(seq)
+            except (TypeError, ValueError):
+                seq = None
+
+            if seq is not None:
+                if self.last_seq is not None and seq > self.last_seq + 1:
+                    self.total_lost += (seq - self.last_seq - 1)
+                self.last_seq = seq
+
+        self.total_received += 1
+        total_packets = max(self.total_received, 1)
+        if self.total_lost > 0:
+            packet["lossPercent"] = round((self.total_lost / total_packets) * 100.0, 2)
+        else:
+            packet["lossPercent"] = 0.0
+
+        uptime_ms = packet.get("uptimeMs")
+        try:
+            uptime_ms = int(uptime_ms)
+        except (TypeError, ValueError):
+            uptime_ms = None
+
+        if uptime_ms is not None:
+            packet["latencyMs"] = max(0, int((time.time() * 1000) - uptime_ms))
+        else:
+            packet["latencyMs"] = 0
+
         return packet
         # --- MÜHENDİS 2 KOD ALANI BİTİŞİ ---

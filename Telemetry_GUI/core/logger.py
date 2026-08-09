@@ -66,42 +66,55 @@ class TelemetryCSVLogger:
         self.filepath = None
         self.file_handle = None
         self.writer = None
-        # TODO (MÜHENDİS 2):
-        # 1) os.makedirs(self.log_dir, exist_ok=True) ile logs klasörünün varlığından emin olun.
-        # 2) datetime.now().strftime("%Y%m%d_%H%M%S") kullanarak benzersiz bir dosya adı oluşturun.
-        # 3) Dosyayı yazma modunda ("w", newline="", encoding="utf-8") açın.
-        # 4) csv.DictWriter(self.file_handle, fieldnames=CSV_FIELDNAMES) oluşturup writeheader() çağırın.
 
     def open(self):
-        """Yeni bir log oturumu başlatır ve CSV başlıklarını yazar."""
-        # --- MÜHENDİS 2 KOD ALANI BAŞLANGICI ---
-        pass
-        # --- MÜHENDİS 2 KOD ALANI BİTİŞİ ---
+        """Yeni bir log oturumu başlatır ve CSV başlıklarını yazar.
+
+        Bu metod, Mühendis 2'nin yaptığı veri pipeline'ın ilk adımıdır.
+        Her yarış/test oturumu için ayrı bir CSV dosyası açılır; böylece
+        Mühendis 3'ün UI verileriyle, analiz için saklanan kayıtlar aynı yapıda tutulur.
+        """
+        os.makedirs(self.log_dir, exist_ok=True)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.filepath = os.path.join(self.log_dir, f"telemetry_{timestamp}.csv")
+        self.file_handle = open(self.filepath, "w", newline="", encoding="utf-8")
+        self.writer = csv.DictWriter(self.file_handle, fieldnames=CSV_FIELDNAMES, restval="")
+        self.writer.writeheader()
+        self.file_handle.flush()
 
     def log_packet(self, packet: dict):
         """
         Gelen telemetri paketini CSV satırı olarak diske yazar.
 
-        TODO (MÜHENDİS 2):
-            - Sözlüğe "timestamp_local" anahtarıyla anlık tarih/saat etiketini ekleyin
-              (örn. datetime.now().isoformat()).
-            - self.writer.writerow(row) metodu ile satırı yazın.
-            - Eksik alan gelirse DictWriter'ın hata vermemesi için `restval=""` veya
-              `packet.get(col, "")` mantığı kullanın.
+        Bu yöntem, parser.py'den gelen işlenmiş paketi zaman damgası ile birlikte
+        kayıt altına alır. Amaç, daha sonra analiz veya raporlama yapılabilmesi için
+        ham veri akışını bozmadan kaydı korumaktır.
         """
-        # --- MÜHENDİS 2 KOD ALANI BAŞLANGICI ---
-        pass
-        # --- MÜHENDİS 2 KOD ALANI BİTİŞİ ---
+        if not self.writer or not self.file_handle:
+            self.open()
+
+        row = dict(packet)
+        row["timestamp_local"] = datetime.now().isoformat(timespec="milliseconds")
+        for field in CSV_FIELDNAMES:
+            row.setdefault(field, "")
+        self.writer.writerow(row)
+        self.file_handle.flush()
 
     def close(self):
         """
         Dosya tutucusunu kapatır ve tüm arabelleklerin (buffer) diske yazılmasını sağlar.
+
+        Bu adım, loglama işleminin güvenli şekilde tamamlanması için gereklidir.
+        Böylece yarış sonunda veya bağlantı kesildiğinde CSV dosyası bozulmadan kapanır.
         """
-        # --- MÜHENDİS 2 KOD ALANI BAŞLANGICI ---
-        # try:
-        #     if self.file_handle and not self.file_handle.closed:
-        #         self.file_handle.close()
-        # except Exception:
-        #     pass
-        pass
-        # --- MÜHENDİS 2 KOD ALANI BİTİŞİ ---
+        try:
+            if self.file_handle and not self.file_handle.closed:
+                self.file_handle.flush()
+                self.file_handle.close()
+        except Exception:
+            pass
+        finally:
+            self.file_handle = None
+            self.writer = None
+
