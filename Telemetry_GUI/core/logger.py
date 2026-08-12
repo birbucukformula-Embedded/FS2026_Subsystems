@@ -61,11 +61,13 @@ class TelemetryCSVLogger:
         logger.close()
     """
 
-    def __init__(self, log_dir: str = "logs"):
+    def __init__(self, log_dir: str = "logs", flush_interval: int = 10):
         self.log_dir = log_dir
         self.filepath = None
         self.file_handle = None
         self.writer = None
+        self.flush_interval = max(1, int(flush_interval))
+        self._pending_flush_count = 0
 
     def open(self):
         """Yeni bir log oturumu başlatır ve CSV başlıklarını yazar.
@@ -82,6 +84,7 @@ class TelemetryCSVLogger:
         self.writer = csv.DictWriter(self.file_handle, fieldnames=CSV_FIELDNAMES, restval="")
         self.writer.writeheader()
         self.file_handle.flush()
+        self._pending_flush_count = 0
 
     def log_packet(self, packet: dict):
         """
@@ -95,11 +98,14 @@ class TelemetryCSVLogger:
             self.open()
 
         row = dict(packet)
-        row["timestamp_local"] = datetime.now().isoformat(timespec="milliseconds")
+        row["timestamp_local"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
         for field in CSV_FIELDNAMES:
             row.setdefault(field, "")
         self.writer.writerow(row)
-        self.file_handle.flush()
+        self._pending_flush_count += 1
+        if self._pending_flush_count >= self.flush_interval:
+            self.file_handle.flush()
+            self._pending_flush_count = 0
 
     def close(self):
         """
